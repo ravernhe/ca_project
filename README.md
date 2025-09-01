@@ -1,0 +1,20 @@
+# Complilation
+
+## Set up venv and run program
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+python main.py
+```
+
+## Compilation
+Dans le venv
+```bash
+pip install pyinstaller
+pyinstaller --noconfirm --clean --onefile --name ca_project `
+  --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets `
+  --collect-qt-plugins=all --collect-all PyQt6 --collect-all pandas --collect-all openpyxl `
+  main.py
+```
