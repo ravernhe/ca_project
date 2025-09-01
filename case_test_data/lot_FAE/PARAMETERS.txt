@@ -1,0 +1,5 @@
+Lot 1 — Paramètres recommandés pour l'UI
+Date de clôture : 2024-12-31
+Début d'exercice : 2024-01-01
+Fin d'exercice   : 2024-12-31
+Taux HKD/EUR     : 9   (=> HKD par 1 EUR, on divise les montants HKD par 9 — FFI uniquement)

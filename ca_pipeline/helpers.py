@@ -4,6 +4,7 @@ from __future__ import annotations
 import re, unicodedata, csv
 from pathlib import Path
 from typing import List, Dict, Optional
+from openpyxl import load_workbook
 import pandas as pd
 from .settings import DATE_COLUMNS
 
@@ -93,10 +94,25 @@ def read_csv_loose(path: Path) -> pd.DataFrame:
 def export_excel(df: pd.DataFrame, out_path: Path, meta: dict):
     df_out = df.replace({pd.NA: "", "nan": "", "<NA>": "", None: ""})
     with pd.ExcelWriter(out_path, engine="openpyxl") as xw:
+        # consolidation
         df_out.to_excel(xw, sheet_name="consolidation", index=False)
+        # resume
         resume = df_out.groupby("Origine rapport", dropna=False).size().rename("nb_lignes").reset_index()
         resume.to_excel(xw, sheet_name="resume", index=False)
+        # parametres
         pd.DataFrame([meta]).to_excel(xw, sheet_name="parametres", index=False)
+
+    # --- Auto-ajustement des largeurs ---
+    wb = load_workbook(out_path)
+
+    for ws in wb.worksheets:
+        # première ligne = en-tête
+        for cell in ws[1]:
+            if cell.value is not None:
+                col_letter = cell.column_letter
+                ws.column_dimensions[col_letter].width = len(str(cell.value)) + 2  # +2 pour marge
+
+    wb.save(out_path)
 
 # ---------- transformations ----------
 def format_date_columns(df: pd.DataFrame, style: str = "mdy_slash") -> pd.DataFrame:

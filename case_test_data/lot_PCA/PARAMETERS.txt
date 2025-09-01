@@ -1,0 +1,5 @@
+Lot 2 — Paramètres recommandés pour l'UI
+Date de clôture : 2025-12-31
+Début d'exercice : 2025-01-01
+Fin d'exercice   : 2025-12-31
+Taux HKD/EUR     : 8.6   (=> HKD par 1 EUR, on divise les montants HKD par 8.6 — FFI uniquement)

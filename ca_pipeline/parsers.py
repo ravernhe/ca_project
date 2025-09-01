@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-import re
 from pathlib import Path
+import re
 import pandas as pd
+
 from .settings import DATE_OUTPUT_STYLE, COLUMN_MAPPING
 from .helpers import (
-    read_any, build_col_index, find_col,
-    normalize_headers, format_date_columns
+    read_any, normalize_headers, format_date_columns
 )
 
-# ----------------------- Utils locaux (href, normalisation) ------------------
+# -------------------------------------------------------------------
+# Utilitaires
+# -------------------------------------------------------------------
 
 _href_re = re.compile(r'href="([^"]+)"')
 def extract_anchor_href(df: pd.DataFrame) -> pd.DataFrame:
@@ -29,9 +31,30 @@ def apply_column_mapping(df: pd.DataFrame) -> pd.DataFrame:
             ren[lower_to_actual[k_lower]] = target
     return df.rename(columns=ren)
 
-# ------------------ Routage code analytique & axes (métier) ------------------
+def _fr_to_float(x) -> float:
+    if pd.isna(x):
+        return 0.0
+    s = str(x)
+    # supprime espaces fines/insécables et remplace la virgule par un point
+    s = s.replace("\u202f", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        s2 = re.sub(r"[^0-9\.\-]+", "", s)
+        try:
+            return float(s2) if s2 not in ("", "-", ".", "-.") else 0.0
+        except Exception:
+            return 0.0
+
+def _fmt_mdy(dt: pd.Timestamp) -> str:
+    return f"{dt.month}/{dt.day}/{str(dt.year)[-2:]}" if pd.notna(dt) else ""
+
+# -------------------------------------------------------------------
+# Codes analytiques & Axes
+# -------------------------------------------------------------------
 
 def fix_code_analytique_fields(df: pd.DataFrame, origin: str) -> pd.DataFrame:
+    """Affecte les colonnes (pdt)/(cf session) selon l'origine, et crée 'Code analytique' = cf;pdt."""
     for col in ["Code analytique (pdt)", "Code analytique (cf session)"]:
         if col not in df.columns:
             df[col] = ""
@@ -78,84 +101,104 @@ def route_axe(df: pd.DataFrame, origin: str) -> pd.DataFrame:
         df["Axe (produit d'opportunité)"] = df["Axe (produit d'opportunité)"].fillna(df["Axe"])
     return df
 
-# ----------------------------- Facturation --------------------
+# -------------------------------------------------------------------
+# Facturation : lecture Excel (B6) et CSV (B6) + extraction des années
+# -------------------------------------------------------------------
 
-def _fr_to_float(x) -> float:
-    """Convertit un montant format FR en float (tolérant aux espaces fines, NBSP, etc.)."""
-    if pd.isna(x):
-        return 0.0
-    s = str(x)
-    s = s.replace("\u202f", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
+_YEAR_RANGE_RE = re.compile(r"(20\d{2}).{0,3}(20\d{2})")
+
+def _extract_years_hint_from_excel_raw(raw: pd.DataFrame) -> tuple[int|None,int|None]:
+    """Cherche une ligne avec 'Année' et 2 années (ex: 'Année', '2023..2024')."""
+    max_rows = min(12, len(raw))
+    max_cols = min(8, raw.shape[1])
+    for i in range(max_rows):
+        row = raw.iloc[i, :max_cols].tolist()
+        for j, v in enumerate(row):
+            s = "" if pd.isna(v) else str(v)
+            if s.strip().lower().startswith("année"):
+                # à droite si dispo
+                if j + 1 < max_cols:
+                    s2 = "" if pd.isna(row[j+1]) else str(row[j+1])
+                    m = _YEAR_RANGE_RE.search(s2)
+                    if m:
+                        y1, y2 = int(m.group(1)), int(m.group(2))
+                        if y1 > y2: y1, y2 = y2, y1
+                        return (y1, y2)
+                # sinon dans la même cellule
+                m = _YEAR_RANGE_RE.search(s)
+                if m:
+                    y1, y2 = int(m.group(1)), int(m.group(2))
+                    if y1 > y2: y1, y2 = y2, y1
+                    return (y1, y2)
+    # fallback C3
     try:
-        return float(s)
+        cell = raw.iloc[2, 2]
+        s = "" if pd.isna(cell) else str(cell)
+        m = _YEAR_RANGE_RE.search(s)
+        if m:
+            y1, y2 = int(m.group(1)), int(m.group(2))
+            if y1 > y2: y1, y2 = y2, y1
+            return (y1, y2)
     except Exception:
-        s2 = re.sub(r"[^0-9\.\-]+", "", s)
-        try:
-            return float(s2) if s2 not in ("", "-", ".", "-.") else 0.0
-        except Exception:
-            return 0.0
+        pass
+    return (None, None)
 
-def _read_fact_excel_b6(path: Path) -> pd.DataFrame:
-    """
-    Lit un Excel dont l'entête est en B6 et les données à partir de B7.
-    Retourne un DataFrame avec la première ligne d'entête prise à B6 (iloc[5,1:]).
-    """
+def _read_fact_excel_b6(path: Path) -> tuple[pd.DataFrame, tuple[int|None,int|None]]:
+    """Excel entête en B6 (ligne 7 Excel, 0-based index 6), données à partir de B7."""
     raw = pd.read_excel(path, header=None, dtype=object)
-    if raw.shape[0] < 7 or raw.shape[1] < 2:
-        raise ValueError(f"Fichier facturation Excel trop court/inattendu: {path.name}")
-    header = raw.iloc[6, 1:].tolist()   # B6..fin
-    data   = raw.iloc[7:, 1:].copy()    # B7..fin
+    years_hint = _extract_years_hint_from_excel_raw(raw)
+    header = raw.iloc[6, 1:].tolist()   # B6
+    data   = raw.iloc[7:, 1:].copy()    # B7+
     data.columns = header
-    return data
+    return data, years_hint
 
-def _read_fact_csv_b6(path: Path) -> pd.DataFrame:
-    """
-    Lit un CSV de facturation dont l'entête est en B6 (ligne 6, colonne B).
-    -> skiprows=5 pour ignorer les 5 premières lignes
-    -> on saute aussi la 1ère colonne (col A) car l'entête commence en B
-    """
-    # try auto-sep detection first
+def _read_fact_csv_b6(path: Path) -> tuple[pd.DataFrame, tuple[int|None,int|None]]:
+    """CSV avec entête positionnée en B6 : skip 5 lignes puis prendre colonnes B..fin."""
+    # on tente la détection de séparateur
     try:
-        raw = pd.read_csv(
-            path, header=None, sep=None, engine="python",
-            encoding="utf-8-sig", on_bad_lines="skip", skiprows=5
-        )
+        raw = pd.read_csv(path, header=None, sep=None, engine="python",
+                          encoding="utf-8-sig", on_bad_lines="skip", skiprows=5)
     except Exception:
         raw = None
         for sep in [";", ",", "\t", "|"]:
             try:
-                raw = pd.read_csv(
-                    path, header=None, sep=sep, engine="python",
-                    encoding="utf-8-sig", on_bad_lines="skip", skiprows=5
-                )
+                raw = pd.read_csv(path, header=None, sep=sep, engine="python",
+                                  encoding="utf-8-sig", on_bad_lines="skip", skiprows=5)
                 break
             except Exception:
                 continue
         if raw is None:
             raise
+    # extraire hint directement depuis le head non-skippé
+    try:
+        head = pd.read_csv(path, header=None, nrows=12, encoding="utf-8-sig", sep=None, engine="python")
+    except Exception:
+        head = None
+        for sep in [";", ",", "\t", "|"]:
+            try:
+                head = pd.read_csv(path, header=None, nrows=12, encoding="utf-8-sig", sep=sep, engine="python")
+                break
+            except Exception:
+                continue
+    years_hint = _extract_years_hint_from_excel_raw(head) if head is not None else (None, None)
 
-    # La ligne immédiatement lue après skiprows=5 correspond à la ligne 6 du CSV → l'entête
-    header = raw.iloc[0, 1:].tolist()     # ligne 6 (Excel) / ligne 1 après skip, colonnes B..fin
-    data   = raw.iloc[1:, 1:].copy()      # données à partir de la ligne 7, colonnes B..fin
+    header = raw.iloc[0, 1:].tolist()   # B6
+    data   = raw.iloc[1:, 1:].copy()    # B7+
     data.columns = header
-    return data
-
+    return data, years_hint
 
 def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
     """
-    Parse un fichier facturation (EUR/HKD) .xlsx/.xls (entête B6) ou .csv (entête première ligne).
-    Extrait:
-      - Section Analytique - Code  -> Code analytique
-      - Date Ecriture              -> Date (m/d/yy)
-      - Solde Tenue de Compte      -> Montant (float)
-    Calcule aussi Année (depuis Date).
-    Retourne un DataFrame avec colonnes: Origine rapport | Code analytique | Date | Année | Montant | [Filiale First Finance]
+    Parse un fichier de facturation (EUR/HKD) : Excel (.xlsx/.xls) ou CSV (B6).
+    Extrait: 'Section Analytique - Code' => 'Code analytique', 'Date Ecriture' => 'Date', 'Montant'.
+    Ajoute: 'Année' (depuis Date), 'Filiale First Finance' si 'Société' présent,
+            et les hints '__Y_HINT_N1' / '__Y_HINT_N' si trouvés.
     """
     suf = path.suffix.lower()
     if suf in (".xlsx", ".xls"):
-        data = _read_fact_excel_b6(path)
+        data, years_hint = _read_fact_excel_b6(path)
     elif suf == ".csv":
-        data = _read_fact_csv_b6(path)
+        data, years_hint = _read_fact_csv_b6(path)
     else:
         raise ValueError(f"Type non supporté pour facturation: {path.suffix}")
 
@@ -164,50 +207,45 @@ def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
         if col not in data.columns:
             raise ValueError(f"Colonne manquante: {col}. Vu: {list(map(str, data.columns))}")
 
-    # On ne garde que ce qui est nécessaire
     df = data[needed + ([c for c in ["Société", "Societe"] if c in data.columns])].copy()
 
     # Normalisations
     df["Section Analytique - Code"] = df["Section Analytique - Code"].astype(str).str.strip()
-
-    # Dates: input peut être '3/25/24' -> on suppose m/d/y (mdy) ; erreurs -> NaT
-    dates = pd.to_datetime(df["Date Ecriture"], errors="coerce", format="%m/%d/%y")
+    dates = pd.to_datetime(df["Date Ecriture"], errors="coerce", dayfirst=False, yearfirst=False)
     df["Année"] = dates.dt.year.astype("Int64")
-    df["Date"]  = dates.apply(lambda d: f"{d.month}/{d.day}/{str(d.year)[-2:]}" if pd.notna(d) else "")
+    df["Date"]  = dates.apply(lambda d: _fmt_mdy(d) if pd.notna(d) else "")
 
-    # Montants FR
     df["Montant"] = pd.to_numeric(df["Solde Tenue de Compte"].map(_fr_to_float), errors="coerce").fillna(0.0)
 
-    # Filtrage de base
-    df = df[df["Section Analytique - Code"].astype(str).str.len() > 0]
-
-    # Sortie standardisée
     out = pd.DataFrame({
-        "Origine rapport": origin_label,
+        "Origine rapport": origin_label,  # 'fact_eur' ou 'fact_hkd'
         "Code analytique": df["Section Analytique - Code"].astype(str).str.strip(),
         "Date": df["Date"],
         "Année": df["Année"],
         "Montant": df["Montant"],
     })
 
-    # Filiale si présent
     if "Société" in df.columns:
         out["Filiale First Finance"] = df["Société"]
     elif "Societe" in df.columns:
         out["Filiale First Finance"] = df["Societe"]
 
-    # On supprime les lignes sans code ou année
-    out = out[out["Code analytique"].astype(str).str.len() > 0]
-    # Année peut être NA si Date vide: on garde quand même (sera ignoré lors des agrégations si besoin)
+    # Inject hints d'années si trouvés
+    y1, y2 = years_hint  # y1 = N-1, y2 = N
+    if y1 is not None and y2 is not None:
+        out["__Y_HINT_N1"] = y1
+        out["__Y_HINT_N"]  = y2
+
+    out["Source fichier"] = path.name
     return out
 
-# ------------------- Parse générique (intra / inter / ss) --------------------
+# -------------------------------------------------------------------
+# Parse générique (INTRA / INTER / SANS_SESSION)
+# -------------------------------------------------------------------
 
 def parse_file_with_origin(path: Path, origin_label: str) -> pd.DataFrame:
     if origin_label in ("fact_eur", "fact_hkd"):
-        df_fact = parse_fact_file(path, origin_label)
-        df_fact["Source fichier"] = path.name
-        return df_fact
+        return parse_fact_file(path, origin_label)
 
     df = read_any(path)
     df = normalize_headers(df)
