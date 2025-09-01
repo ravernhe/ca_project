@@ -5,21 +5,13 @@ from pathlib import Path
 from typing import List
 import pandas as pd
 
-# Compatibilité PyQt6 / PyQt5
-try:
-    from PyQt6.QtWidgets import (
+# Compatibilité PyQt6
+from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
         QListWidget, QFileDialog, QMessageBox, QFormLayout, QLineEdit, QLabel,
         QGroupBox, QGridLayout
     )
-    from PyQt6.QtCore import Qt
-except Exception:
-    from PyQt5.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-        QListWidget, QFileDialog, QMessageBox, QFormLayout, QLineEdit, QLabel,
-        QGroupBox, QGridLayout
-    )
-    from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 
 from .parsers import parse_file_with_origin
 from .pipeline import (

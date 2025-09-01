@@ -1,10 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import sys
-try:
-    from PyQt6.QtWidgets import QApplication
-except Exception:
-    from PyQt5.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication
 
 from ca_pipeline.gui import MainWindow
 
