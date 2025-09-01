@@ -3,7 +3,12 @@
 ## Set up venv and run program
 ```bash
 python -m venv .venv
+
+# On Mac and Linux
 source .venv/bin/activate
+# On Windows
+.venv\Scripts\activate
+
 pip install -U pip
 pip install -r requirements.txt
 python main.py
