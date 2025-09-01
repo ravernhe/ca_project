@@ -16,7 +16,8 @@ from PyQt6.QtCore import Qt
 from .parsers import parse_file_with_origin
 from .pipeline import (
     pipeline_concat, compute_facturation_from_external,
-    compute_ca_attendu, normalize_to_target
+    compute_ca_attendu, normalize_to_target, compute_dates_repere,
+    compute_progress_and_backlog
 )
 from .helpers import export_excel
 
@@ -181,19 +182,32 @@ class MainWindow(QMainWindow):
             if not data_frames:
                 raise RuntimeError("Ajoutez au moins un fichier INTRA / SANS_SESSION / INTER.")
 
-            # Étape 1: concat (hors factures)
             df = pipeline_concat(data_frames)
 
-            # Étape 3: Facturation (N / N-1) via fichiers externes
             fact_eur = pipeline_concat(fact_eur_frames) if fact_eur_frames else pd.DataFrame()
             fact_hkd = pipeline_concat(fact_hkd_frames) if fact_hkd_frames else pd.DataFrame()
-            df = compute_facturation_from_external(df, fact_eur, fact_hkd, self.in_hkd_rate.text())
 
-            # Étape 4: CA attendu
+            # Y, Y-1, Y-2 + total (and get closure year hint from facts)
+            df, closure_year = compute_facturation_from_external(df, fact_eur, fact_hkd, self.in_hkd_rate.text())
+
+            # CA attendu
             df = compute_ca_attendu(df)
 
-            # Normalisation et export
+            # Dates repère (execution date override)
+            df = compute_dates_repere(df)
+
+            # Progress / backlog / FAE / PCA
+            df = compute_progress_and_backlog(
+                df,
+                date_cloture=self.in_date_clot.text(),
+                debut_exercice=self.in_debut_ex.text(),
+                fin_exercice=self.in_fin_ex.text(),
+                closure_year_hint=closure_year
+            )
+
+            # Export ordering
             df = normalize_to_target(df)
+
             meta = {
                 "Mois de clôture": self.in_mois.text(),
                 "Année de clôture": self.in_annee.text(),

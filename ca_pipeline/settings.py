@@ -17,6 +17,9 @@ TARGET_COLUMNS = [
     "Date prévisionnelle de début de projet","Date de fin de projet",
     "Code analytique","StorageOpportuniteId","Nom du produit","Famille de produit",
     "Lien Vers le Produit d'opportunité","Type d'enregistrement","CA attendu",
+    "Date de début repère", "Date de fin repère", "Facturation Y-2", "Facturation Y-1",
+    "Facturation Y", "Facutration totale", "Avancement global", "Avancement EOY",
+    "CA avancement", "CA YTD", "CA EOY (backlog)", "FAE", "PCA",
 ]
 
 COLUMN_MAPPING = {
