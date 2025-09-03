@@ -3,23 +3,17 @@
 DATE_OUTPUT_STYLE = "mdy_slash"  # export as m/d/yy (e.g., 6/14/23)
 
 TARGET_COLUMNS = [
-    "Origine rapport","Filiale First Finance",
-    "Code analytique (cf session)","Code analytique (pdt)","Nom de l'opportunité","Session",
-    "Date d'éxécution (produit sans session)","Date de début","Date de fin","Prix total",
-    "Axe (sessions)","Axe (produit d'opportunité)","Statut",
-    "Facturation (convertie) N","Facturation (convertie) N-1",
-    "Nombre de sessions prévisionnelles","Nombre de sessions réelles","Nombre de sessions annulées",
-    "Nombre de sessions facturées", "Quantité",
-    "Nbre de jours ou personnes par session",
-    "Prix de vente (converti) Devise","Prix de vente (converti)",
-    "Prix total (converti) Devise","Prix total (converti)",
-    "Prix Intra 1 standard (converti) Devise","Prix Intra 1 standard (converti)","Dans les locaux de",
-    "Date prévisionnelle de début de projet","Date de fin de projet",
-    "Code analytique","StorageOpportuniteId","Nom du produit","Famille de produit",
-    "Lien Vers le Produit d'opportunité","Type d'enregistrement",
-    "CA attendu", "Date de début repère", "Date de fin repère", "Facturation Y-2", "Facturation Y-1",
-    "Facturation Y", "Facutration totale", "Avancement global", "Avancement EOY",
-    "CA avancement", "CA YTD", "CA EOY (backlog)", "FAE", "PCA",
+    "Origine rapport","Filiale First Finance","Code analytique (cf session)","Code analytique (pdt)",
+    "Nom de l'opportunité","Session","Date d'éxécution (produit sans session)","Date de début","Date de fin",
+    "Prix Intra 1 standard (converti)","Prix total","CA session (converti)","Axe (sessions)","Axe (produit d'opportunité)","Statut",
+    "Facturation (convertie) N-2","Facturation (convertie) N-1","Facturation (convertie) N",
+    "Nombre de sessions prévisionnelles","Nombre de sessions réelles","Nombre de sessions annulées","Nombre de sessions facturées","Quantité",
+    "Nbre de jours ou personnes par session","Prix de vente (converti) Devise","Prix de vente (converti)",
+    "Prix total (converti) Devise","Prix total (converti)","Prix Intra 1 standard (converti) Devise","Dans les locaux de",
+    "Date prévisionnelle de début de projet","Date de fin de projet","Code analytique","StorageOpportuniteId",
+    "Nom du produit","Famille de produit","Lien Vers le Produit d'opportunité","Type d'enregistrement","CA attendu",
+    "Taux d'avancement global","CA YTD","Date de début repère","Date de fin repère","Facturation Y-2","Facturation Y-1","Facturation Y","Facturation totale",
+    "Avancement EOY","CA avancement","CA EOY (backlog)","FAE","PCA"
 ]
 
 COLUMN_MAPPING = {

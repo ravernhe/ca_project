@@ -91,28 +91,120 @@ def read_csv_loose(path: Path) -> pd.DataFrame:
     except Exception as e:
         raise ValueError(f"CSV illisible: {path.name} ({e})")
 
+from openpyxl import load_workbook
+
+from openpyxl import load_workbook
+from datetime import datetime
+import pandas as pd
+from pathlib import Path
+
 def export_excel(df: pd.DataFrame, out_path: Path, meta: dict):
-    df_out = df.replace({pd.NA: "", "nan": "", "<NA>": "", None: ""})
+    ws_name = "consolidation"
+
+    # --- Colonnes à cibler ---
+    date_cols = [
+        "Date d'éxécution (produit sans session)",
+        "Date de début",
+        "Date de fin",
+        "Date prévisionnelle de début de projet",
+        "Date de fin de projet",
+    ]
+    price_cols = [
+        "Prix Intra 1 standard (converti)",
+        "Prix total",
+        "CA session",
+        "Facturation (convertie) N-2",
+        "Facturation (convertie) N-1",
+        "Facturation (convertie) N",
+        "Facturation Y-2",
+        "Facturation Y-1",
+        "Facturation Y",
+        "Facturation totale",
+        "CA attendu",
+        "CA avancement",
+        "CA YTD",
+        "CA EOY (backlog)",
+        "FAE",
+        "PCA",
+        "Prix de vente (converti)",
+        "Prix total (converti)",
+    ]
+    percent_cols = ["Taux d'avancement global", "Avancement EOY"]
+
+    # --- Préparation du DataFrame ---
+    df_out = df.copy()
+
+    # convertir les colonnes de dates en datetime64
+    for col in date_cols:
+        if col in df_out.columns:
+            df_out[col] = pd.to_datetime(df_out[col], errors="coerce")
+
+    # remplacer NaN uniquement sur les colonnes non-dates
+    non_date_cols = [c for c in df_out.columns if c not in date_cols]
+    df_out[non_date_cols] = df_out[non_date_cols].replace(
+        {pd.NA: "", "nan": "", "<NA>": "", None: ""}
+    )
+
+    # --- Écriture des feuilles ---
     with pd.ExcelWriter(out_path, engine="openpyxl") as xw:
-        # consolidation
-        df_out.to_excel(xw, sheet_name="consolidation", index=False)
-        # resume
-        resume = df_out.groupby("Origine rapport", dropna=False).size().rename("nb_lignes").reset_index()
+        df_out.to_excel(xw, sheet_name=ws_name, index=False)
+        resume = (
+            df_out.groupby("Origine rapport", dropna=False)
+            .size()
+            .rename("nb_lignes")
+            .reset_index()
+        )
         resume.to_excel(xw, sheet_name="resume", index=False)
-        # parametres
         pd.DataFrame([meta]).to_excel(xw, sheet_name="parametres", index=False)
 
-    # --- Auto-ajustement des largeurs ---
+    # --- Mise en forme Excel ---
     wb = load_workbook(out_path)
 
+    # auto-largeur en fonction de l'en-tête
     for ws in wb.worksheets:
-        # première ligne = en-tête
         for cell in ws[1]:
             if cell.value is not None:
                 col_letter = cell.column_letter
-                ws.column_dimensions[col_letter].width = len(str(cell.value)) + 2  # +2 pour marge
+                ws.column_dimensions[col_letter].width = len(str(cell.value)) + 2
+
+    ws = wb[ws_name]
+    headers = {cell.value: cell.column for cell in ws[1] if cell.value}
+
+    # Dates → DD/MM/YY
+    for name in date_cols:
+        if name in headers:
+            ci = headers[name]
+            for col in ws.iter_cols(
+                min_col=ci, max_col=ci, min_row=2, values_only=False
+            ):
+                for cell in col:
+                    if isinstance(cell.value, (datetime, pd.Timestamp)):
+                        cell.number_format = "dd/mm/yy"
+
+    # Prix → #
+    for name in price_cols:
+        if name in headers:
+            ci = headers[name]
+            for col in ws.iter_cols(
+                min_col=ci, max_col=ci, min_row=2, values_only=False
+            ):
+                for cell in col:
+                    if isinstance(cell.value, (int, float)):
+                        cell.number_format = "#"
+
+    # Pourcentages → 0%
+    for name in percent_cols:
+        if name in headers:
+            ci = headers[name]
+            for col in ws.iter_cols(
+                min_col=ci, max_col=ci, min_row=2, values_only=False
+            ):
+                for cell in col:
+                    cell.number_format = "0%"
 
     wb.save(out_path)
+
+
 
 # ---------- transformations ----------
 def format_date_columns(df: pd.DataFrame, style: str = "mdy_slash") -> pd.DataFrame:

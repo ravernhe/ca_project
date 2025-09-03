@@ -86,7 +86,7 @@ def compute_facturation_from_external(df_main: pd.DataFrame,
                                       fact_hkd: pd.DataFrame,
                                       hkd_to_eur_rate) -> Tuple[pd.DataFrame, Optional[int]]:
     """
-    - Construit 'Facturation Y', 'Y-1', 'Y-2', 'Facutration totale'.
+    - Construit 'Facturation Y', 'Y-1', 'Y-2', 'Facturation totale'.
     - Alimente 'Facturation (convertie) N' = 'Facturation Y', 'N-1' = 'Facturation Y-1'.
     - Conversion HKD->EUR : DIVISION par le taux (HKD par 1 EUR) et UNIQUEMENT pour Filiale FFI.
     - Les années N/N-1 sont obligatoirement celles de l'en-tête des fichiers de facturation si disponibles.
@@ -111,7 +111,7 @@ def compute_facturation_from_external(df_main: pd.DataFrame,
         years = sorted(set(y for y in years if 2000 <= y <= 2199))
         if not years:
             for col in ["Facturation Y-2", "Facturation Y-1", "Facturation Y",
-                        "Facutration totale", "Facturation (convertie) N", "Facturation (convertie) N-1"]:
+                        "Facturation totale", "Facturation (convertie) N", "Facturation (convertie) N-1"]:
                 df[col] = 0.0
             return df, None
         yearY  = years[-1]
@@ -169,11 +169,12 @@ def compute_facturation_from_external(df_main: pd.DataFrame,
     df["Facturation Y"]   = _c0(df.get("EUR_Y", 0))  + _c0(df.get("HKD_Y", 0))
     df["Facturation Y-1"] = (_c0(df.get("EUR_Y1", 0)) + _c0(df.get("HKD_Y1", 0))) if yearY1 else 0.0
     df["Facturation Y-2"] = (_c0(df.get("EUR_Y2", 0)) + _c0(df.get("HKD_Y2", 0))) if yearY2 else 0.0
-    df["Facutration totale"] = _c0(df["Facturation Y"]) + _c0(df["Facturation Y-1"]) + _c0(df["Facturation Y-2"])
+    df["Facturation totale"] = _c0(df["Facturation Y"]) + _c0(df["Facturation Y-1"]) + _c0(df["Facturation Y-2"])
 
     # Colonnes “historiques” demandées
     df["Facturation (convertie) N"]   = df["Facturation Y"]
     df["Facturation (convertie) N-1"] = df["Facturation Y-1"]
+    df["Facturation (convertie) N-2"] = df["Facturation Y-2"]
 
     # nettoyage colonnes temporaires
     for c in ["EUR_Y","EUR_Y1","EUR_Y2","HKD_Y","HKD_Y1","HKD_Y2"]:
@@ -238,110 +239,246 @@ def compute_dates_repere(df: pd.DataFrame) -> pd.DataFrame:
 # Avancement / Backlog / FAE / PCA
 # -------------------------------------------------------
 
+def _to_dt(s: pd.Series) -> pd.Series:
+    # Try MDY (e.g., 6/14/23), then DMY (14/06/23), then a permissive fallback with dayfirst
+    s1 = pd.to_datetime(s, format="%m/%d/%y", errors="coerce")
+    # fill the NaT with DMY parse
+    need = s1.isna()
+    if need.any():
+        s2 = pd.to_datetime(s[need], format="%d/%m/%y", errors="coerce")
+        s1.loc[need] = s2
+        need = s1.isna()
+    if need.any():
+        s3 = pd.to_datetime(s[need], errors="coerce", dayfirst=True)
+        s1.loc[need] = s3
+    return s1
+
+
+def _clean_str_series(s: pd.Series) -> pd.Series:
+    if not isinstance(s, pd.Series):
+        return pd.Series([], dtype="object")
+    return s.astype(str).str.replace("\u00A0", " ", regex=False).str.strip()
+
+def _origin_norm_series(df: pd.DataFrame) -> pd.Series:
+    if "Origine rapport" not in df.columns:
+        return pd.Series([""] * len(df), index=df.index)
+    s = _clean_str_series(df["Origine rapport"]).str.lower()
+    return s.replace({
+        "sans session": "sans_session",
+        "pdt ss session": "sans_session",
+        "ss": "sans_session",
+        "inter": "inter",
+        "intra": "intra",
+    })
+
+def parse_param_date(s: str) -> pd.Timestamp:
+    s = str(s or "").strip()
+    if not s:
+        return pd.NaT
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", s)
+    if m:
+        y, a, b = map(int, m.groups())
+        # normal YYYY-MM-DD
+        if 1 <= a <= 12 and 1 <= b <= 31:
+            return pd.to_datetime(f"{y:04d}-{a:02d}-{b:02d}", errors="coerce")
+        # swapped YYYY-DD-MM
+        if 1 <= b <= 12 and 1 <= a <= 31:
+            return pd.to_datetime(f"{y:04d}-{b:02d}-{a:02d}", errors="coerce")
+    # common fallbacks
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%y"):
+        try:
+            return pd.to_datetime(s, format=fmt)
+        except Exception:
+            pass
+    return pd.to_datetime(s, errors="coerce")
+
+def compute_avancement_eoy_v2(df: pd.DataFrame, date_cloture_str: str, fin_exercice_str: str) -> pd.DataFrame:
+    df = df.copy()
+
+    col_exec = "Date d'éxécution (produit sans session)"
+    col_deb  = "Date de début"
+    col_fin  = "Date de fin"
+
+    # Parse params (tolerant)
+    dc = parse_param_date(date_cloture_str)
+    fe = parse_param_date(fin_exercice_str)
+
+    # Parse data dates
+    deb = _to_dt(df[col_deb]) if col_deb in df.columns else pd.Series([pd.NaT]*len(df), index=df.index)
+    fin = _to_dt(df[col_fin]) if col_fin in df.columns else pd.Series([pd.NaT]*len(df), index=df.index)
+    exe = _to_dt(df[col_exec]) if col_exec in df.columns else pd.Series([pd.NaT]*len(df), index=df.index)
+
+    origin = _origin_norm_series(df)
+    col_eoy = "Avancement EOY"
+    if col_eoy not in df.columns:
+        df[col_eoy] = 0.0
+
+    # If params invalid -> EOY = 0
+    if pd.isna(dc) or pd.isna(fe):
+        df[col_eoy] = 0.0
+        return df
+
+    # ---- SANS_SESSION ----
+    mask_ss = origin.eq("sans_session")
+    if col_exec in df.columns:
+        no_exec = mask_ss & (_clean_str_series(df[col_exec]) == "")
+        df.loc[no_exec, col_eoy] = "=NA()"
+    has_exec = mask_ss & exe.notna()
+    df.loc[has_exec, col_eoy] = ((exe > dc) & (exe <= fe)).astype(float)
+
+    # ---- INTRA / INTER ----
+    mask_ii = origin.isin(["intra", "inter"])
+
+    # Consider backlog only after closure and up to FE → overlap of [dc, fe] with [deb, fin]
+    # Fully before closure: fin <= dc -> 0
+    fully_before = mask_ii & fin.notna() & (fin <= dc)
+    # Fully after FE: deb >= fe -> 0
+    fully_after  = mask_ii & deb.notna() & (deb >= fe)
+    df.loc[fully_before | fully_after, col_eoy] = 0.0
+
+    overlap_mask = mask_ii & deb.notna() & fin.notna() & ~(fully_before | fully_after)
+
+    # Duration (avoid div by zero)
+    dur = (fin - deb).dt.days
+
+    # Overlap days inside (dc, fe] — we use (dc, fe] to exclude exact-closure day as "after"
+    start = pd.concat([deb, pd.Series([dc]*len(df), index=df.index)], axis=1).max(axis=1)
+    end   = pd.concat([fin, pd.Series([fe]*len(df), index=df.index)], axis=1).min(axis=1)
+
+    # Exclude exact equality at start: if end <= dc -> 0 by earlier rule; here treat strictly after dc
+    overlap_days = (end - start).dt.days.clip(lower=0)
+
+    ratio = (overlap_days / dur.replace(0, pd.NA)).fillna(0.0).clip(lower=0.0, upper=1.0)
+    df.loc[overlap_mask, col_eoy] = ratio
+
+    # Zero-duration: project on a single day
+    zero_dur = overlap_mask & (dur == 0)
+    # If that single day lies in (dc, fe] → 1 else 0
+    single_in_window = (deb > dc) & (deb <= fe)
+    df.loc[zero_dur & single_in_window, col_eoy] = 1.0
+    df.loc[zero_dur & ~single_in_window, col_eoy] = 0.0
+
+    return df
+
+
+def compute_taux_avancement_global_v2(df: pd.DataFrame, date_cloture_str: str) -> pd.DataFrame:
+    df = df.copy()
+
+    # Colonnes utilisées
+    col_exec = "Date d'éxécution (produit sans session)"
+    col_deb  = "Date de début"
+    col_fin  = "Date de fin"
+
+    # Parse dates
+    dc  = pd.to_datetime(date_cloture_str, errors="coerce")
+    deb = _to_dt(df[col_deb]) if col_deb in df.columns else pd.Series([pd.NaT] * len(df), index=df.index)
+    fin = _to_dt(df[col_fin]) if col_fin in df.columns else pd.Series([pd.NaT] * len(df), index=df.index)
+    exe = _to_dt(df[col_exec]) if col_exec in df.columns else pd.Series([pd.NaT] * len(df), index=df.index)
+
+    # Origine
+    if "Origine rapport" in df.columns:
+        origin = df["Origine rapport"].astype(str).str.lower().str.strip()
+    else:
+        origin = pd.Series([""] * len(df), index=df.index)
+
+    out_col = "Taux d'avancement global"
+    df[out_col] = pd.NA  # init vide
+
+    # Si pas de date de clôture → fixer à 0 pour éviter le “vide”
+    if pd.isna(dc):
+        df.loc[origin.eq("sans_session") & exe.notna(), out_col] = 1.0  # par défaut: exécuté => 1
+        df.loc[origin.eq("sans_session") & exe.isna(),  out_col] = "=NA()"  # pas de date d’exécution => erreur Excel
+        df.loc[origin.isin(["intra", "inter"]), out_col] = 0.0
+        return df
+
+    # --- sans_session ---
+    mask_ss = origin.eq("sans_session")
+    if col_exec in df.columns:
+        no_exec = mask_ss & (df[col_exec].astype(str).str.strip() == "")
+        df.loc[no_exec, out_col] = "=NA()"
+
+    m0 = mask_ss & exe.notna() & (exe < dc)   # exécution avant clôture → 0
+    df.loc[m0, out_col] = 0.0
+    m1 = mask_ss & exe.notna() & ~m0          # sinon → 1
+    df.loc[m1, out_col] = 1.0
+
+    # --- intra / inter ---
+    mask_ii = origin.isin(["intra", "inter"])
+    m_full  = mask_ii & fin.notna() & (fin < dc)   # fin < clôture → 1
+    df.loc[m_full, out_col] = 1.0
+
+    m_zero  = mask_ii & deb.notna() & (deb > dc)   # début > clôture → 0
+    df.loc[m_zero, out_col] = 0.0
+
+    m_frac  = mask_ii & deb.notna() & fin.notna() & ~(m_full | m_zero)
+    dur_days = (fin - deb).dt.days
+    ratio    = ((dc - deb).dt.days / dur_days.replace(0, pd.NA)).fillna(1.0).clip(lower=0.0, upper=1.0)
+
+    zero_dur = m_frac & (dur_days == 0)
+    df.loc[m_frac, out_col] = ratio
+    df.loc[zero_dur & (dc >= fin), out_col] = 1.0
+    df.loc[zero_dur & (dc <  fin), out_col] = 0.0
+
+    return df
+
+
 def compute_progress_and_backlog(df: pd.DataFrame,
                                  date_cloture: str,
                                  debut_exercice: str,
                                  fin_exercice: str,
                                  closure_year_hint: Optional[int]) -> pd.DataFrame:
-    """
-    - Avancement global = overlap([Date début, Date fin], [Début d'exercice, Date de clôture]), fallback 1 si durée invalide.
-    - Avancement EOY :
-        * INTRA / SANS_SESSION => règle Excel sur dates REPÈRE (voir commentaire)
-        * INTER (autres) => overlap([Clôture, Fin d'exercice]) sur dates RÉELLES
-    - CA avancement, CA YTD
-    - CA EOY (backlog) avec gating sur année de fin REPÈRE >= Année de clôture
-    - FAE / PCA vs Facutration totale
-    """
     df = df.copy()
 
-    # Dates réelles et repère
-    ddeb_dt     = _mdy_to_datetime(df.get("Date de début", ""))
-    dfin_dt     = _mdy_to_datetime(df.get("Date de fin", ""))
-    ddeb_rep_dt = _mdy_to_datetime(df.get("Date de début repère", ""))
-    dfin_rep_dt = _mdy_to_datetime(df.get("Date de fin repère", ""))
+    # 1) Taux d'avancement global (déjà V2)
+    df = compute_taux_avancement_global_v2(df, date_cloture_str=date_cloture)
 
-    # Dates de contrôle
-    dc = pd.to_datetime(date_cloture, errors="coerce")
-    de = pd.to_datetime(debut_exercice, errors="coerce")
-    fe = pd.to_datetime(fin_exercice, errors="coerce")
+    # 2) CA attendu
+    ca_att = pd.to_numeric(df.get("CA attendu", 0), errors="coerce").fillna(0)
 
-    # Avancement global (réelles) sur [DébutEx, Clôture]
-    if pd.notna(de) and pd.notna(dc):
-        frac_global = _overlap_fraction(ddeb_dt, dfin_dt, de, dc)
-    else:
-        frac_global = pd.Series([1.0] * len(df), index=df.index)
+    # 3) CA YTD
+    taux = df.get("Taux d'avancement global", 0)
+    taux_num = pd.to_numeric(taux, errors="coerce").fillna(0)
+    df["CA YTD"] = ca_att * taux_num
+    df["CA avancement"] = df["CA YTD"]
 
-    statut = df.get("Statut", "").astype(str).str.lower().str.strip()
-    is_annulee = statut.eq("annulée") | statut.eq("annulee")
-    frac_global = frac_global.where(~is_annulee, other=0.0)
-    df["Avancement global"] = frac_global
+    # 4) Facturation totale (robuste)
+    col_fact_total = "Facturation totale"
+    if col_fact_total not in df.columns:
+        df[col_fact_total] = 0.0
+    df[col_fact_total] = pd.to_numeric(df[col_fact_total], errors="coerce").fillna(0)
+    fact_tot = df[col_fact_total]
 
-    # Origine
-    origin = df.get("Origine rapport", "").astype(str).str.lower().str.strip()
-    is_intra_or_ss = origin.isin(["intra", "sans_session"])
+    # 5) FAE / PCA (V2)
+    diff = df["CA YTD"] - fact_tot
+    df["FAE"] = diff.clip(lower=0)
+    df["PCA"] = diff.clip(upper=0)
 
-    # Année de clôture
-    if closure_year_hint is not None:
-        cloture_year = closure_year_hint
-    else:
-        cloture_year = pd.to_datetime(date_cloture, errors="coerce").year if pd.notna(dc) else None
+    # 6) Avancement EOY (V2) + CA EOY (backlog)
+    df = compute_avancement_eoy_v2(df, date_cloture_str=date_cloture, fin_exercice_str=fin_exercice)
 
-    # EOY par défaut (INTER) sur réelles : [Clôture, FinEx]
-    if pd.notna(dc) and pd.notna(fe):
-        frac_eoy_default = _overlap_fraction(ddeb_dt, dfin_dt, dc, fe)
-    else:
-        frac_eoy_default = pd.Series([0.0] * len(df), index=df.index)
+    # Numeric copy for multiplication (keep any =NA() text in display column)
+    av_eoy_num = pd.to_numeric(df.get("Avancement EOY", 0), errors="coerce").fillna(0)
+    ca_att = pd.to_numeric(df.get("CA attendu", 0), errors="coerce").fillna(0)
+    df["CA EOY (backlog)"] = ca_att * av_eoy_num
 
-    # EOY pour INTRA/SANS_SESSION sur REPÈRE (formule Excel)
-    frac_eoy_intra_ss = pd.Series([0.0] * len(df), index=df.index, dtype=float)
-    if pd.notna(dc):
-        fin_year_rep = dfin_rep_dt.dt.year
-        cond_annulee   = is_annulee
-        cond_year_lt   = (fin_year_rep < cloture_year) if cloture_year is not None else pd.Series([False] * len(df), index=df.index)
-        cond_fin_lt_dc = (dfin_rep_dt < dc)
-        cond_deb_gt_dc = (ddeb_rep_dt > dc)
+    return df
 
-        frac = pd.Series([0.0] * len(df), index=df.index, dtype=float)
-        # AE(repère) < Clôture => 1
-        frac = frac.where(~cond_fin_lt_dc, other=1.0)
-        # sinon ratio (Clôture - Début_repère) / (Fin_repère - Début_repère), fallback 1 si durée invalide
-        dur = (dfin_rep_dt - ddeb_rep_dt).dt.days
-        with pd.option_context('mode.use_inf_as_na', True):
-            ratio = ((dc - ddeb_rep_dt).dt.days / dur.replace(0, pd.NA)).fillna(1.0).clip(lower=0.0, upper=1.0)
-        need_ratio = ~(cond_fin_lt_dc | cond_deb_gt_dc)
-        frac = frac.where(~need_ratio, other=ratio)
 
-        # gates
-        frac = frac.where(~cond_year_lt, other=0.0)
-        frac = frac.where(~cond_deb_gt_dc, other=0.0)
-        frac = frac.where(~cond_annulee,  other=0.0)
 
-        frac_eoy_intra_ss = frac
+def inject_excel_error_for_ss_missing_exec(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    col_av = "Taux d'avancement global"
+    col_exec = "Date d'éxécution (produit sans session)"
 
-    # Choix final
-    frac_eoy = frac_eoy_default.where(~is_intra_or_ss, frac_eoy_intra_ss)
-    frac_eoy = frac_eoy.where(~is_annulee, other=0.0)
-    df["Avancement EOY"] = frac_eoy
+    # masque: sans_session ET date d'exécution vide / manquante
+    mask = (
+        df.get("Origine rapport", "").astype(str).str.lower().eq("sans_session")
+        & (df.get(col_exec, "").astype(str).str.strip() == "")
+    )
 
-    # CA dérivés
-    ca_att = _c0(df.get("CA attendu", 0))
-    df["CA avancement"] = ca_att * df["Avancement global"]
-    df["CA YTD"]        = (1 - is_annulee.astype(int)) * ca_att * df["Avancement global"]
-
-    # Backlog gate : année de fin REPÈRE >= année de clôture
-    fin_year_repere = dfin_rep_dt.dt.year
-    if cloture_year is None:
-        after_gate = pd.Series([1] * len(df), index=df.index)
-    else:
-        after_gate = (fin_year_repere >= cloture_year).fillna(False).astype(int)
-
-    df["CA EOY (backlog)"] = after_gate * ca_att * df["Avancement EOY"]
-
-    # FAE / PCA
-    fact_tot = _c0(df.get("Facutration totale", 0))
-    df["FAE"] = after_gate * (df["CA avancement"] - fact_tot).clip(lower=0.0)
-    df["PCA"] = after_gate * (fact_tot - df["CA avancement"]).clip(lower=0.0)
-
+    # Injecter une erreur Excel vraie : =NA()
+    # Important: ne pas mettre des quotes; commencer par "=" pour que ce soit une formule.
+    df.loc[mask, col_av] = "=(1/0)"
     return df
 
 # -------------------------------------------------------

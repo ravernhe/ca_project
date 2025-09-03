@@ -17,7 +17,7 @@ from .parsers import parse_file_with_origin
 from .pipeline import (
     pipeline_concat, compute_facturation_from_external,
     compute_ca_attendu, normalize_to_target, compute_dates_repere,
-    compute_progress_and_backlog
+    compute_progress_and_backlog, inject_excel_error_for_ss_missing_exec
 )
 from .helpers import export_excel
 
@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
         self.in_date_clot = QLineEdit(); self.in_date_clot.setPlaceholderText("YYYY-MM-DD")
         self.in_debut_ex  = QLineEdit(); self.in_debut_ex.setPlaceholderText("YYYY-MM-DD")
         self.in_fin_ex    = QLineEdit(); self.in_fin_ex.setPlaceholderText("YYYY-MM-DD")
-        self.in_hkd_rate  = QLineEdit(); self.in_hkd_rate.setPlaceholderText("e.g. 0.116")
+        self.in_hkd_rate  = QLineEdit(); self.in_hkd_rate.setPlaceholderText("e.g. 9")
 
         form.addRow("Mois de clôture", self.in_mois)
         form.addRow("Année de clôture", self.in_annee)
@@ -208,6 +208,8 @@ class MainWindow(QMainWindow):
             # Export ordering
             df = normalize_to_target(df)
 
+            # Genere error
+            df = inject_excel_error_for_ss_missing_exec(df)
             meta = {
                 "Mois de clôture": self.in_mois.text(),
                 "Année de clôture": self.in_annee.text(),
