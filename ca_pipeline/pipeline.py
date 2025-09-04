@@ -5,6 +5,7 @@ import re
 import pandas as pd
 from typing import List, Optional, Tuple
 from .settings import TARGET_COLUMNS, INTERMEDIATE_MONETARY_COLS
+from .helpers import _clean_str_series
 
 # -------------------------------------------------------
 # Utils
@@ -321,7 +322,7 @@ def compute_avancement_eoy_v2(df: pd.DataFrame, date_cloture_str: str, fin_exerc
     # ---- SANS_SESSION ----
     mask_ss = origin.eq("sans_session")
     if col_exec in df.columns:
-        no_exec = mask_ss & (_clean_str_series(df[col_exec]) == "")
+        no_exec = mask_ss & (_clean_str_series(df[col_exec]).fillna("") == "")
         df.loc[no_exec, col_eoy] = "=NA()"
     has_exec = mask_ss & exe.notna()
     df.loc[has_exec, col_eoy] = ((exe > dc) & (exe <= fe)).astype(float)
@@ -375,7 +376,7 @@ def compute_taux_avancement_global_v2(df: pd.DataFrame, date_cloture_str: str) -
     fin = _to_dt(df[col_fin]) if col_fin in df.columns else pd.Series([pd.NaT] * len(df), index=df.index)
     exe = _to_dt(df[col_exec]) if col_exec in df.columns else pd.Series([pd.NaT] * len(df), index=df.index)
 
-    # Origine
+    # Origine (toujours en Series)
     if "Origine rapport" in df.columns:
         origin = df["Origine rapport"].astype(str).str.lower().str.strip()
     else:
@@ -384,42 +385,50 @@ def compute_taux_avancement_global_v2(df: pd.DataFrame, date_cloture_str: str) -
     out_col = "Taux d'avancement global"
     df[out_col] = pd.NA  # init vide
 
-    # Si pas de date de clôture → fixer à 0 pour éviter le “vide”
+    # Si pas de date de clôture → garder le fallback actuel
     if pd.isna(dc):
-        df.loc[origin.eq("sans_session") & exe.notna(), out_col] = 1.0  # par défaut: exécuté => 1
-        df.loc[origin.eq("sans_session") & exe.isna(),  out_col] = "=NA()"  # pas de date d’exécution => erreur Excel
+        # sans session : exécuté => 1 ; pas de date => erreur
+        df.loc[origin.eq("sans_session") & exe.notna(), out_col] = 1.0
+        df.loc[origin.eq("sans_session") & exe.isna(),  out_col] = "=NA()"
+        # inter/intra : 0 par défaut (pas d'échelle temporelle)
         df.loc[origin.isin(["intra", "inter"]), out_col] = 0.0
         return df
 
-    # --- sans_session ---
+    # --- SANS_SESSION (NOUVELLE RÈGLE) ---
     mask_ss = origin.eq("sans_session")
     if col_exec in df.columns:
         no_exec = mask_ss & (df[col_exec].astype(str).str.strip() == "")
-        df.loc[no_exec, out_col] = "=NA()"
+        df.loc[no_exec, out_col] = "=NA()"      # vraie erreur Excel si pas de date
 
-    m0 = mask_ss & exe.notna() & (exe < dc)   # exécution avant clôture → 0
+    # Si exe > clôture -> 0, sinon 1
+    m0 = mask_ss & exe.notna() & (exe > dc)     # <<< changé : '>' (avant : '<')
     df.loc[m0, out_col] = 0.0
-    m1 = mask_ss & exe.notna() & ~m0          # sinon → 1
+    m1 = mask_ss & exe.notna() & ~m0
     df.loc[m1, out_col] = 1.0
 
-    # --- intra / inter ---
+    # --- INTRA / INTER (inchangé) ---
     mask_ii = origin.isin(["intra", "inter"])
-    m_full  = mask_ii & fin.notna() & (fin < dc)   # fin < clôture → 1
+    # fin < clôture -> 1
+    m_full = mask_ii & fin.notna() & (fin < dc)
     df.loc[m_full, out_col] = 1.0
 
-    m_zero  = mask_ii & deb.notna() & (deb > dc)   # début > clôture → 0
+    # début > clôture -> 0
+    m_zero = mask_ii & deb.notna() & (deb > dc)
     df.loc[m_zero, out_col] = 0.0
 
-    m_frac  = mask_ii & deb.notna() & fin.notna() & ~(m_full | m_zero)
+    # cas fractionnel
+    m_frac = mask_ii & deb.notna() & fin.notna() & ~(m_full | m_zero)
     dur_days = (fin - deb).dt.days
-    ratio    = ((dc - deb).dt.days / dur_days.replace(0, pd.NA)).fillna(1.0).clip(lower=0.0, upper=1.0)
+    ratio = ((dc - deb).dt.days / dur_days.replace(0, pd.NA)).fillna(1.0).clip(lower=0.0, upper=1.0)
 
+    # durée nulle : si clôture >= fin -> 1, sinon 0
     zero_dur = m_frac & (dur_days == 0)
     df.loc[m_frac, out_col] = ratio
     df.loc[zero_dur & (dc >= fin), out_col] = 1.0
     df.loc[zero_dur & (dc <  fin), out_col] = 0.0
 
     return df
+
 
 
 def compute_progress_and_backlog(df: pd.DataFrame,

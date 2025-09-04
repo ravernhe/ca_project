@@ -35,7 +35,6 @@ def _fr_to_float(x) -> float:
     if pd.isna(x):
         return 0.0
     s = str(x)
-    # supprime espaces fines/insécables et remplace la virgule par un point
     s = s.replace("\u202f", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
     try:
         return float(s)
@@ -54,7 +53,6 @@ def _fmt_mdy(dt: pd.Timestamp) -> str:
 # -------------------------------------------------------------------
 
 def fix_code_analytique_fields(df: pd.DataFrame, origin: str) -> pd.DataFrame:
-    """Affecte les colonnes (pdt)/(cf session) selon l'origine, et crée 'Code analytique' = cf;pdt."""
     for col in ["Code analytique (pdt)", "Code analytique (cf session)"]:
         if col not in df.columns:
             df[col] = ""
@@ -102,13 +100,12 @@ def route_axe(df: pd.DataFrame, origin: str) -> pd.DataFrame:
     return df
 
 # -------------------------------------------------------------------
-# Facturation : lecture Excel (B6) et CSV (B6) + extraction des années
+# Facturation
 # -------------------------------------------------------------------
 
 _YEAR_RANGE_RE = re.compile(r"(20\d{2}).{0,3}(20\d{2})")
 
 def _extract_years_hint_from_excel_raw(raw: pd.DataFrame) -> tuple[int|None,int|None]:
-    """Cherche une ligne avec 'Année' et 2 années (ex: 'Année', '2023..2024')."""
     max_rows = min(12, len(raw))
     max_cols = min(8, raw.shape[1])
     for i in range(max_rows):
@@ -116,7 +113,6 @@ def _extract_years_hint_from_excel_raw(raw: pd.DataFrame) -> tuple[int|None,int|
         for j, v in enumerate(row):
             s = "" if pd.isna(v) else str(v)
             if s.strip().lower().startswith("année"):
-                # à droite si dispo
                 if j + 1 < max_cols:
                     s2 = "" if pd.isna(row[j+1]) else str(row[j+1])
                     m = _YEAR_RANGE_RE.search(s2)
@@ -124,13 +120,11 @@ def _extract_years_hint_from_excel_raw(raw: pd.DataFrame) -> tuple[int|None,int|
                         y1, y2 = int(m.group(1)), int(m.group(2))
                         if y1 > y2: y1, y2 = y2, y1
                         return (y1, y2)
-                # sinon dans la même cellule
                 m = _YEAR_RANGE_RE.search(s)
                 if m:
                     y1, y2 = int(m.group(1)), int(m.group(2))
                     if y1 > y2: y1, y2 = y2, y1
                     return (y1, y2)
-    # fallback C3
     try:
         cell = raw.iloc[2, 2]
         s = "" if pd.isna(cell) else str(cell)
@@ -144,17 +138,14 @@ def _extract_years_hint_from_excel_raw(raw: pd.DataFrame) -> tuple[int|None,int|
     return (None, None)
 
 def _read_fact_excel_b6(path: Path) -> tuple[pd.DataFrame, tuple[int|None,int|None]]:
-    """Excel entête en B6 (ligne 7 Excel, 0-based index 6), données à partir de B7."""
     raw = pd.read_excel(path, header=None, dtype=object)
     years_hint = _extract_years_hint_from_excel_raw(raw)
-    header = raw.iloc[6, 1:].tolist()   # B6
-    data   = raw.iloc[7:, 1:].copy()    # B7+
+    header = raw.iloc[5, 1:].tolist()
+    data   = raw.iloc[6:, 1:].copy()
     data.columns = header
     return data, years_hint
 
 def _read_fact_csv_b6(path: Path) -> tuple[pd.DataFrame, tuple[int|None,int|None]]:
-    """CSV avec entête positionnée en B6 : skip 5 lignes puis prendre colonnes B..fin."""
-    # on tente la détection de séparateur
     try:
         raw = pd.read_csv(path, header=None, sep=None, engine="python",
                           encoding="utf-8-sig", on_bad_lines="skip", skiprows=5)
@@ -169,7 +160,6 @@ def _read_fact_csv_b6(path: Path) -> tuple[pd.DataFrame, tuple[int|None,int|None
                 continue
         if raw is None:
             raise
-    # extraire hint directement depuis le head non-skippé
     try:
         head = pd.read_csv(path, header=None, nrows=12, encoding="utf-8-sig", sep=None, engine="python")
     except Exception:
@@ -182,18 +172,12 @@ def _read_fact_csv_b6(path: Path) -> tuple[pd.DataFrame, tuple[int|None,int|None
                 continue
     years_hint = _extract_years_hint_from_excel_raw(head) if head is not None else (None, None)
 
-    header = raw.iloc[0, 1:].tolist()   # B6
-    data   = raw.iloc[1:, 1:].copy()    # B7+
+    header = raw.iloc[0, 1:].tolist()
+    data   = raw.iloc[1:, 1:].copy()
     data.columns = header
     return data, years_hint
 
 def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
-    """
-    Parse un fichier de facturation (EUR/HKD) : Excel (.xlsx/.xls) ou CSV (B6).
-    Extrait: 'Section Analytique - Code' => 'Code analytique', 'Date Ecriture' => 'Date', 'Montant'.
-    Ajoute: 'Année' (depuis Date), 'Filiale First Finance' si 'Société' présent,
-            et les hints '__Y_HINT_N1' / '__Y_HINT_N' si trouvés.
-    """
     suf = path.suffix.lower()
     if suf in (".xlsx", ".xls"):
         data, years_hint = _read_fact_excel_b6(path)
@@ -208,17 +192,14 @@ def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
             raise ValueError(f"Colonne manquante: {col}. Vu: {list(map(str, data.columns))}")
 
     df = data[needed + ([c for c in ["Société", "Societe"] if c in data.columns])].copy()
-
-    # Normalisations
     df["Section Analytique - Code"] = df["Section Analytique - Code"].astype(str).str.strip()
     dates = pd.to_datetime(df["Date Ecriture"], errors="coerce", dayfirst=False, yearfirst=False)
     df["Année"] = dates.dt.year.astype("Int64")
     df["Date"]  = dates.apply(lambda d: _fmt_mdy(d) if pd.notna(d) else "")
-
     df["Montant"] = pd.to_numeric(df["Solde Tenue de Compte"].map(_fr_to_float), errors="coerce").fillna(0.0)
 
     out = pd.DataFrame({
-        "Origine rapport": origin_label,  # 'fact_eur' ou 'fact_hkd'
+        "Origine rapport": origin_label,
         "Code analytique": df["Section Analytique - Code"].astype(str).str.strip(),
         "Date": df["Date"],
         "Année": df["Année"],
@@ -230,8 +211,7 @@ def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
     elif "Societe" in df.columns:
         out["Filiale First Finance"] = df["Societe"]
 
-    # Inject hints d'années si trouvés
-    y1, y2 = years_hint  # y1 = N-1, y2 = N
+    y1, y2 = years_hint
     if y1 is not None and y2 is not None:
         out["__Y_HINT_N1"] = y1
         out["__Y_HINT_N"]  = y2
@@ -240,7 +220,68 @@ def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
     return out
 
 # -------------------------------------------------------------------
-# Parse générique (INTRA / INTER / SANS_SESSION)
+# Prix (simplified: always EUR)
+# -------------------------------------------------------------------
+
+PRICE_TO_DEV_COL = {
+    "Prix Intra 1 standard (converti)": "Prix Intra 1 standard (converti) Devise",
+    "Prix total (converti)": "Prix total (converti) Devise",
+    "Prix de vente (converti)": "Prix de vente (converti) Devise",
+}
+
+PRICE_COL_ALIASES = {
+    "Prix Intra 1 standard (converti)": [
+        "Prix intra 1 standard (converti)", "Prix Intra 1 Standard (converti)",
+        "Prix Intra 1 standard(converti)", "Prix intra 1 standard converti",
+    ],
+    "Prix total (converti)": [
+        "Prix total (converti)", "Prix Total (converti)", "Prix total(converti)",
+        "Prix total",
+    ],
+    "Prix de vente (converti)": [
+        "Prix de vente (converti)", "Prix De Vente (converti)", "Prix de vente(converti)",
+    ],
+}
+
+def _normalize_header_name(name: str) -> str:
+    return str(name).replace("\u00A0", " ").replace("\u202F", " ").strip().replace("  ", " ")
+
+def _resolve_present_price_cols(df: pd.DataFrame) -> dict[str, str]:
+    present = { _normalize_header_name(c): c for c in df.columns }
+    resolved = {}
+    for canonical, variants in PRICE_COL_ALIASES.items():
+        if canonical in present:
+            resolved[canonical] = present[canonical]
+            continue
+        for v in variants:
+            v_norm = _normalize_header_name(v)
+            if v_norm in present:
+                resolved[canonical] = present[v_norm]
+                break
+    return resolved
+
+def normalize_price_columns(df: pd.DataFrame,
+                            price_cols: list[str] | None = None,
+                            create_missing_dev_col: bool = True,
+                            debug: bool = False) -> pd.DataFrame:
+    df = df.copy()
+    resolved = _resolve_present_price_cols(df)
+    if price_cols:
+        resolved = {k: v for k, v in resolved.items() if k in price_cols}
+
+    for canonical, actual_col in resolved.items():
+        df[actual_col] = pd.to_numeric(df[actual_col], errors="coerce")
+
+        dev_col = PRICE_TO_DEV_COL.get(canonical)
+        if dev_col:
+            df[dev_col] = "EUR"
+        elif create_missing_dev_col:
+            df[f"{canonical} Devise détectée"] = "EUR"
+
+    return df
+
+# -------------------------------------------------------------------
+# Parse générique
 # -------------------------------------------------------------------
 
 def parse_file_with_origin(path: Path, origin_label: str) -> pd.DataFrame:
@@ -250,9 +291,11 @@ def parse_file_with_origin(path: Path, origin_label: str) -> pd.DataFrame:
     df = read_any(path)
     df = normalize_headers(df)
     df = apply_column_mapping(df)
+    df = normalize_price_columns(df)
+    df = format_date_columns(df, style="datetime_fr")
+    df = normalize_price_columns(df)
 
     df["Origine rapport"] = origin_label
-    df = format_date_columns(df, DATE_OUTPUT_STYLE)
     df = extract_anchor_href(df)
     df = fix_code_analytique_fields(df, origin_label)
     df = route_axe(df, origin_label)

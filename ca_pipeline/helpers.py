@@ -5,6 +5,7 @@ import re, unicodedata, csv
 from pathlib import Path
 from typing import List, Dict, Optional
 from openpyxl import load_workbook
+from datetime import datetime
 import pandas as pd
 from .settings import DATE_COLUMNS
 
@@ -91,13 +92,6 @@ def read_csv_loose(path: Path) -> pd.DataFrame:
     except Exception as e:
         raise ValueError(f"CSV illisible: {path.name} ({e})")
 
-from openpyxl import load_workbook
-
-from openpyxl import load_workbook
-from datetime import datetime
-import pandas as pd
-from pathlib import Path
-
 def export_excel(df: pd.DataFrame, out_path: Path, meta: dict):
     ws_name = "consolidation"
 
@@ -108,6 +102,8 @@ def export_excel(df: pd.DataFrame, out_path: Path, meta: dict):
         "Date de fin",
         "Date prévisionnelle de début de projet",
         "Date de fin de projet",
+        "Date de début repère",
+        "Date de fin repère",
     ]
     price_cols = [
         "Prix Intra 1 standard (converti)",
@@ -207,14 +203,73 @@ def export_excel(df: pd.DataFrame, out_path: Path, meta: dict):
 
 
 # ---------- transformations ----------
-def format_date_columns(df: pd.DataFrame, style: str = "mdy_slash") -> pd.DataFrame:
-    def _fmt_mdy_slash(dt):
-        if pd.isna(dt): return ""
-        return f"{dt.month}/{dt.day}/{str(dt.year)[-2:]}"
+def _clean_str_series(s: pd.Series) -> pd.Series:
+    if not isinstance(s, pd.Series):
+        return pd.Series([], dtype="object")
+    return (
+        s.astype(str)
+         .str.replace("\u00A0", " ", regex=False)   # espace insécable
+         .str.strip()
+         .replace({"": pd.NA})
+    )
+
+def _to_dt_fr(s: pd.Series) -> pd.Series:
+    """
+    Parse FR pendant le parsing :
+      - JJ/MM/AAAA
+      - JJ/MM/AA
+    Tolère aussi '-' et '.' comme séparateurs et nombres Excel.
+    Ne tente PAS le format US (MDY).
+    """
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return pd.to_datetime(s, errors="coerce")
+
+    s_clean = _clean_str_series(s)
+    s_norm  = s_clean.str.replace(r"[-\.]", "/", regex=True)
+
+    out = pd.to_datetime(s_norm, format="%d/%m/%Y", errors="coerce")  # JJ/MM/AAAA
+    need = out.isna()
+    if need.any():
+        out.loc[need] = pd.to_datetime(s_norm[need], format="%d/%m/%y", errors="coerce")  # JJ/MM/AA
+
+    need = out.isna()
+    if need.any():
+        # fallback FR (dayfirst)
+        out.loc[need] = pd.to_datetime(s_norm[need], errors="coerce", dayfirst=True, yearfirst=False)
+
+    # nombres Excel éventuels
+    need = out.isna()
+    if need.any():
+        num_mask = pd.to_numeric(s_norm[need], errors="coerce").notna()
+        idx = s_norm[need][num_mask].index
+        if len(idx):
+            nums = pd.to_numeric(s_norm.loc[idx], errors="coerce")
+            out.loc[idx] = pd.to_datetime(nums, unit="D", origin="1899-12-30", errors="coerce")
+
+    return out
+
+# ---- nouvelle version ----
+
+def format_date_columns(df: pd.DataFrame, style: str = "datetime_fr") -> pd.DataFrame:
+    """
+    - 'datetime_fr' (par défaut) : parse les colonnes DATE_COLUMNS en datetime (FR), sans formater en texte.
+    - 'dd/mm/yy' : parse FR puis rend sous forme texte 'dd/mm/yy' (utile seulement si tu veux voir du texte).
+    - 'iso' : parse FR puis rend 'YYYY-MM-DD' (texte).
+    """
+    df = df.copy()
+
     for col in DATE_COLUMNS:
         if col in df.columns:
-            s = pd.to_datetime(df[col], errors="coerce", format="%m/%d/%y")
-            df[col] = s.apply(_fmt_mdy_slash) if style == "mdy_slash" else s.astype(str)
+            s = _to_dt_fr(df[col])
+            if style == "datetime_fr":
+                df[col] = s
+            elif style == "dd/mm/yy":
+                df[col] = s.dt.strftime("%d/%m/%y").fillna("")
+            elif style == "iso":
+                df[col] = s.dt.strftime("%Y-%m-%d").fillna("")
+            else:
+                # fallback : garder datetime
+                df[col] = s
     return df
 
 def normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
