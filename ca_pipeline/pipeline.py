@@ -444,11 +444,13 @@ def compute_progress_and_backlog(df: pd.DataFrame,
     # 2) CA attendu
     ca_att = pd.to_numeric(df.get("CA attendu", 0), errors="coerce").fillna(0)
 
+    
     # 3) CA YTD
     taux = df.get("Taux d'avancement global", 0)
     taux_num = pd.to_numeric(taux, errors="coerce").fillna(0)
     df["CA YTD"] = ca_att * taux_num
     df["CA avancement"] = df["CA YTD"]
+    # df = _enforce_ytd_only_current_year(df, closure_year_hint)
 
     # 4) Facturation totale (robuste)
     col_fact_total = "Facturation totale"
@@ -502,3 +504,19 @@ def normalize_to_target(df: pd.DataFrame) -> pd.DataFrame:
         if c in df.columns and c not in TARGET_COLUMNS:
             df.drop(columns=[c], inplace=True)
     return df[TARGET_COLUMNS]
+
+# def _enforce_ytd_only_current_year(df: pd.DataFrame, annee_N: int | None, date_cloture: str | None = None) -> pd.DataFrame:
+#     """
+#     Ensure CA YTD only applies to the current year N.
+#     If per-line 'Année' exists, use it; otherwise approximate with Facturation Y > 0.
+#     date_cloture may be 'DD/MM/YYYY' or 'YYYY-MM-DD'; it's not strictly required for the guard.
+#     """
+#     out = df.copy()
+#     if "CA YTD" in out.columns:
+#         if "Année" in out.columns and annee_N is not None:
+#             is_N = pd.to_numeric(out["Année"], errors="coerce").astype("Int64") == annee_N
+#             out.loc[~is_N, "CA YTD"] = 0.0
+#         elif "Facturation Y" in out.columns:
+#             is_N = out["Facturation Y"].fillna(0) > 0
+#             out.loc[~is_N, "CA YTD"] = 0.0
+#     return out

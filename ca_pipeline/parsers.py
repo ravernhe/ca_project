@@ -105,37 +105,22 @@ def route_axe(df: pd.DataFrame, origin: str) -> pd.DataFrame:
 
 _YEAR_RANGE_RE = re.compile(r"(20\d{2}).{0,3}(20\d{2})")
 
-def _extract_years_hint_from_excel_raw(raw: pd.DataFrame) -> tuple[int|None,int|None]:
+def _extract_years_hint_from_excel_raw(raw: pd.DataFrame) -> list[int]:
+    """Cherche une cellule avec un intervalle d'années (ex: '2023..2025')
+       et retourne [2023, 2024, 2025]."""
     max_rows = min(12, len(raw))
     max_cols = min(8, raw.shape[1])
     for i in range(max_rows):
         row = raw.iloc[i, :max_cols].tolist()
-        for j, v in enumerate(row):
+        for v in row:
             s = "" if pd.isna(v) else str(v)
-            if s.strip().lower().startswith("année"):
-                if j + 1 < max_cols:
-                    s2 = "" if pd.isna(row[j+1]) else str(row[j+1])
-                    m = _YEAR_RANGE_RE.search(s2)
-                    if m:
-                        y1, y2 = int(m.group(1)), int(m.group(2))
-                        if y1 > y2: y1, y2 = y2, y1
-                        return (y1, y2)
-                m = _YEAR_RANGE_RE.search(s)
-                if m:
-                    y1, y2 = int(m.group(1)), int(m.group(2))
-                    if y1 > y2: y1, y2 = y2, y1
-                    return (y1, y2)
-    try:
-        cell = raw.iloc[2, 2]
-        s = "" if pd.isna(cell) else str(cell)
-        m = _YEAR_RANGE_RE.search(s)
-        if m:
-            y1, y2 = int(m.group(1)), int(m.group(2))
-            if y1 > y2: y1, y2 = y2, y1
-            return (y1, y2)
-    except Exception:
-        pass
-    return (None, None)
+            m = _YEAR_RANGE_RE.search(s)
+            if m:
+                y1, y2 = int(m.group(1)), int(m.group(2))
+                if y1 > y2:
+                    y1, y2 = y2, y1
+                return list(range(y1, y2 + 1))
+    return []
 
 def _read_fact_excel_b6(path: Path) -> tuple[pd.DataFrame, tuple[int|None,int|None]]:
     raw = pd.read_excel(path, header=None, dtype=object)
@@ -211,10 +196,18 @@ def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
     elif "Societe" in df.columns:
         out["Filiale First Finance"] = df["Societe"]
 
-    y1, y2 = years_hint
-    if y1 is not None and y2 is not None:
-        out["__Y_HINT_N1"] = y1
-        out["__Y_HINT_N"]  = y2
+    years = years_hint if isinstance(years_hint, (list, tuple)) else []
+    years = [int(y) for y in years if y is not None]
+
+    if years:
+        years_sorted = sorted(set(years))
+        # keep compatibility with existing pipeline columns:
+        out["__Y_HINT_N"] = years_sorted[-1]              # most recent year
+        if len(years_sorted) >= 2:
+            out["__Y_HINT_N1"] = years_sorted[-2]         # previous year
+
+        # optional: store the full range as a csv string for later logic (non-breaking)
+        out["__Y_HINT_YEARS"] = ",".join(map(str, years_sorted))
 
     out["Source fichier"] = path.name
     return out
@@ -264,25 +257,25 @@ def normalize_price_columns(df: pd.DataFrame,
                             price_cols: list[str] | None = None,
                             create_missing_dev_col: bool = True,
                             debug: bool = False) -> pd.DataFrame:
+    """Simplified currency handling:
+    - only numeric coercion on price columns
+    - fill associated devise columns with 'EUR' by default.
+    """
     df = df.copy()
     resolved = _resolve_present_price_cols(df)
     if price_cols:
         resolved = {k: v for k, v in resolved.items() if k in price_cols}
-
+    if debug:
+        print("[price] resolved:", resolved)
     for canonical, actual_col in resolved.items():
-        df[actual_col] = pd.to_numeric(df[actual_col], errors="coerce")
-
+        df[actual_col] = pd.to_numeric(df[actual_col], errors='coerce')
         dev_col = PRICE_TO_DEV_COL.get(canonical)
         if dev_col:
-            df[dev_col] = "EUR"
+            df[dev_col] = 'EUR'
         elif create_missing_dev_col:
-            df[f"{canonical} Devise détectée"] = "EUR"
-
+            det_col = f"{canonical} Devise détectée"
+            df[det_col] = 'EUR'
     return df
-
-# -------------------------------------------------------------------
-# Parse générique
-# -------------------------------------------------------------------
 
 def parse_file_with_origin(path: Path, origin_label: str) -> pd.DataFrame:
     if origin_label in ("fact_eur", "fact_hkd"):
