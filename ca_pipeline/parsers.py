@@ -182,6 +182,7 @@ def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
     df["Année"] = dates.dt.year.astype("Int64")
     df["Date"]  = dates.apply(lambda d: _fmt_mdy(d) if pd.notna(d) else "")
     df["Montant"] = pd.to_numeric(df["Solde Tenue de Compte"].map(_fr_to_float), errors="coerce").fillna(0.0)
+    df["DateDT"] = dates
 
     out = pd.DataFrame({
         "Origine rapport": origin_label,
@@ -189,6 +190,7 @@ def parse_fact_file(path: Path, origin_label: str) -> pd.DataFrame:
         "Date": df["Date"],
         "Année": df["Année"],
         "Montant": df["Montant"],
+        "DateDT": df["DateDT"],
     })
 
     if "Société" in df.columns:

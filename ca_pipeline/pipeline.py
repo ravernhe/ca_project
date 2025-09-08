@@ -57,6 +57,27 @@ def _overlap_fraction(start: pd.Series, end: pd.Series,
 # Facturation (Y, Y-1, Y-2 + N, N-1)
 # -------------------------------------------------------
 
+def _agg_by_year_with_cutoff(df: pd.DataFrame, year: int, cutoff: pd.Timestamp | None) -> pd.Series:
+    """
+    Agrège 'Montant' par 'Code analytique' sur l'année demandée.
+    Si cutoff est fourni et appartient à 'year', borne à DateDT <= cutoff.
+    Retourne une Series indexée par Code analytique (somme des montants).
+    """
+    if df is None or df.empty or year is None:
+        return pd.Series(dtype="float64")
+    d = df.copy()
+    if "Année" not in d.columns:
+        return pd.Series(dtype="float64")
+    mask = d["Année"].astype("Int64") == year
+    if cutoff is not None and cutoff.year == year and "DateDT" in d.columns:
+        # si DateDT absent/NaT, on garde uniquement les lignes datées <= cutoff
+        dd = pd.to_datetime(d["DateDT"], errors="coerce")
+        mask = mask & dd.notna() & (dd <= cutoff)
+    d = d.loc[mask, ["Code analytique", "Montant"]]
+    if d.empty:
+        return pd.Series(dtype="float64")
+    return d.groupby("Code analytique")["Montant"].sum()
+
 def _agg_by_year(sub: pd.DataFrame, year: Optional[int]) -> pd.Series:
     if sub is None or sub.empty or year is None:
         return pd.Series(dtype=float)
@@ -85,7 +106,8 @@ def _majority_pair(sub: pd.DataFrame) -> tuple[int|None, int|None]:
 def compute_facturation_from_external(df_main: pd.DataFrame,
                                       fact_eur: pd.DataFrame,
                                       fact_hkd: pd.DataFrame,
-                                      hkd_to_eur_rate) -> Tuple[pd.DataFrame, Optional[int]]:
+                                      hkd_to_eur_rate,
+                                      date_cloture: str | None = None) -> Tuple[pd.DataFrame, Optional[int]]:
     """
     - Construit 'Facturation Y', 'Y-1', 'Y-2', 'Facturation totale'.
     - Alimente 'Facturation (convertie) N' = 'Facturation Y', 'N-1' = 'Facturation Y-1'.
@@ -121,11 +143,19 @@ def compute_facturation_from_external(df_main: pd.DataFrame,
     # On peut déduire Y-2
     yearY2 = yearY1 - 1 if yearY1 is not None else None
 
-    # 2) Agrégation par année / code
-    eur_Y   = _agg_by_year(fact_eur, yearY)
+    # Parse souple de la date de clôture (FR accepté)
+    cutoff = None
+    if date_cloture:
+        cut1 = pd.to_datetime(date_cloture, errors="coerce", dayfirst=True,  yearfirst=False)
+        cut2 = pd.to_datetime(date_cloture, errors="coerce", dayfirst=False, yearfirst=False)
+        cutoff = cut1 if pd.notna(cut1) else (cut2 if pd.notna(cut2) else None)
+    
+    # Année N (Y) bornée à la date de clôture si fournie
+    eur_Y   = _agg_by_year_with_cutoff(fact_eur, yearY, cutoff)
+    hkd_Y   = _agg_by_year_with_cutoff(fact_hkd, yearY, cutoff)
+    # N-1 et N-2 sur l'année complète (pas de cut-off)
     eur_Y1  = _agg_by_year(fact_eur, yearY1)
     eur_Y2  = _agg_by_year(fact_eur, yearY2)
-    hkd_Y   = _agg_by_year(fact_hkd, yearY)
     hkd_Y1  = _agg_by_year(fact_hkd, yearY1)
     hkd_Y2  = _agg_by_year(fact_hkd, yearY2)
 

@@ -188,7 +188,7 @@ class MainWindow(QMainWindow):
             fact_hkd = pipeline_concat(fact_hkd_frames) if fact_hkd_frames else pd.DataFrame()
 
             # Y, Y-1, Y-2 + total (and get closure year hint from facts)
-            df, closure_year = compute_facturation_from_external(df, fact_eur, fact_hkd, self.in_hkd_rate.text())
+            df, closure_year = compute_facturation_from_external(df, fact_eur, fact_hkd, self.in_hkd_rate.text(), self.in_date_clot.text())
 
             # CA attendu
             df = compute_ca_attendu(df)
