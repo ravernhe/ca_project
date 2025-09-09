@@ -79,11 +79,18 @@ def fix_code_analytique_fields(df: pd.DataFrame, origin: str) -> pd.DataFrame:
             df["Code analytique (pdt)"] = df["Code analytique (pdt)"].where(df["Code analytique (pdt)"].astype(str).ne(""), df[src])
 
     for tgt in ["Code analytique (pdt)", "Code analytique (cf session)"]:
-        df[tgt] = df[tgt].astype(str).replace({"nan": "", "None": "", "<NA>": ""}).str.strip()
+        df[tgt] = (
+            df[tgt]
+            .astype(str)
+            .replace({"nan": "", "None": "", "<NA>": ""})
+            .str.strip()
+        )
 
-    cf  = df["Code analytique (cf session)"].fillna("").astype(str)
-    pdt = df["Code analytique (pdt)"].fillna("").astype(str)
-    df["Code analytique"] = (cf + ";" + pdt).str.replace(";;", ";", regex=False).str.strip(";").str.strip()
+    # Nouvelle règle :
+    if origin.lower().strip() == "sans_session":
+        df["Code analytique"] = df["Code analytique (pdt)"]
+    else:
+        df["Code analytique"] = df["Code analytique (cf session)"]
     return df
 
 def route_axe(df: pd.DataFrame, origin: str) -> pd.DataFrame:

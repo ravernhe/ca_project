@@ -238,7 +238,8 @@ def compute_ca_attendu(df: pd.DataFrame) -> pd.DataFrame:
 def compute_dates_repere(df: pd.DataFrame) -> pd.DataFrame:
     """
     Date de début repère  = Date prévisionnelle de début de projet (sinon Date de début)
-    Date de fin repère    = Date de fin de projet (sinon Date de fin)
+    Date de fin repère    = SI Origine rapport = sans_session/sans session -> Date d'exécution
+                            SINON -> Date de fin
     """
     def _parse_mdy(series):
         try:
@@ -246,25 +247,47 @@ def compute_dates_repere(df: pd.DataFrame) -> pd.DataFrame:
         except Exception:
             return pd.to_datetime(series, errors="coerce", dayfirst=False, yearfirst=False)
 
+    # Inputs
     prev_deb = df.get("Date prévisionnelle de début de projet", "")
     prev_fin = df.get("Date de fin de projet", "")
     deb      = df.get("Date de début", "")
     fin      = df.get("Date de fin", "")
+    exec_    = df.get("Date d'éxécution (produit sans session)", "")
+    origine  = df.get("Origine rapport", "")
 
+    # Parse dates
     prev_deb_dt = _parse_mdy(prev_deb)
     prev_fin_dt = _parse_mdy(prev_fin)
     deb_dt      = _parse_mdy(deb)
     fin_dt      = _parse_mdy(fin)
+    exec_dt     = _parse_mdy(exec_)
 
+    # Règle "prévisionnelle d'abord" pour la date de début
     use_prev_deb = prev_deb.astype(str).str.strip().ne("")
-    use_prev_fin = prev_fin.astype(str).str.strip().ne("")
-
     deb_repere_dt = deb_dt.where(~use_prev_deb, prev_deb_dt)
-    fin_repere_dt = fin_dt.where(~use_prev_fin, prev_fin_dt)
 
+    # Règle demandée pour la date de fin repère
+    # On accepte "sans_session" et "sans session"
+    ori_norm = (
+        origine.astype(str)
+               .str.lower()
+               .str.strip()
+               .str.replace("\u00a0", " ")
+               .str.replace("\u202f", " ")
+    )
+    # normaliser espaces/underscores
+    ori_key = ori_norm.str.replace(r"[\s_]+", "", regex=True)
+    is_sans = ori_key.eq("sanssession")
+
+    # Si sans_session -> Date d'exécution, sinon Date de fin
+    fin_repere_dt = fin_dt.where(~is_sans, exec_dt)
+
+    # Format m/d/yy
+    df = df.copy()
     df["Date de début repère"] = deb_repere_dt.apply(lambda d: f"{d.month}/{d.day}/{str(d.year)[-2:]}" if pd.notna(d) else "")
     df["Date de fin repère"]   = fin_repere_dt.apply(  lambda d: f"{d.month}/{d.day}/{str(d.year)[-2:]}" if pd.notna(d) else "")
     return df
+
 
 # -------------------------------------------------------
 # Avancement / Backlog / FAE / PCA
